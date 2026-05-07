@@ -1,6 +1,6 @@
 {
   "name": "@vibecontrols/vibe-plugin-ai-plandex",
-  "version": "2026.428.5",
+  "version": "2026.508.2",
   "type": "module",
   "main": "./dist/index.js",
   "description": "Plandex AI agent provider for VibeControls",

@@ -5,8 +5,13 @@
  * CLI-only provider — spawns the CLI binary for prompt execution.
  */
 
+import { accessSync, constants as fsConstants } from "node:fs";
 import { Elysia } from "elysia";
-import type { HostServices, VibePlugin, ProfileContext } from "@vibecontrols/plugin-sdk";
+import type {
+  HostServices,
+  VibePlugin,
+  ProfileContext,
+} from "@vibecontrols/plugin-sdk";
 import {
   BoundLogger,
   ProviderRegistry,
@@ -166,7 +171,12 @@ const CLI_BIN = resolveCliBin();
 const DISPLAY = "Plandex";
 const API_PREFIX = `/api/ai-${PROVIDER_NAME}`;
 const SUPPORTED_MODES: ProviderMode[] = ["cli"];
-const CLI_INSTALL_KIND = "manual" as const;
+// Plandex installs a binary via its official curl script. It targets
+// /usr/local/bin and uses sudo when not root (no user-writable override
+// upstream), so an unprivileged agent surfaces the install under pendingSudo
+// instead of failing. https://docs.plandex.ai/install
+const CLI_INSTALL_KIND = "binary" as const;
+const PLANDEX_INSTALL_CMD = "curl -sL https://plandex.ai/install.sh | bash";
 
 interface ManagedSession {
   id: string;
@@ -435,6 +445,51 @@ function getCliVersion(): string | null {
   return null;
 }
 
+/**
+ * The Plandex install script writes the binary to /usr/local/bin and only uses
+ * sudo when not root. We can run it ourselves (no sudo needed) when the process
+ * is root OR /usr/local/bin is directly writable; otherwise the install must be
+ * elevated, which we surface via pendingSudo rather than failing.
+ */
+function canInstallPlandexWithoutSudo(): boolean {
+  const isRoot =
+    typeof process.getuid === "function" ? process.getuid() === 0 : false;
+  if (isRoot) return true;
+  try {
+    accessSync("/usr/local/bin", fsConstants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Install Plandex via its official curl|bash script. The agent image ships curl
+ * + bash but not npm, so a curl-script install is the runtime-resilient path.
+ */
+function installPlandexViaScript(): { ok: boolean; message: string } {
+  try {
+    const proc = Bun.spawnSync(["bash", "-c", PLANDEX_INSTALL_CMD], {
+      timeout: 180_000,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    if (proc.exitCode === 0) return { ok: true, message: "plandex installed" };
+    return {
+      ok: false,
+      message:
+        proc.stderr.toString().trim() ||
+        proc.stdout.toString().trim() ||
+        `plandex install script exited ${proc.exitCode}`,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      message: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 function createPrereqsRoutes() {
   return new Elysia({ prefix: "/prereqs" })
     .get("/status", () => {
@@ -447,7 +502,7 @@ function createPrereqsRoutes() {
               {
                 name: CLI_COMMAND,
                 kind: CLI_INSTALL_KIND,
-                requiresSudo: false,
+                requiresSudo: !canInstallPlandexWithoutSudo(),
                 description: `${DISPLAY} CLI for CLI mode`,
               },
             ],
@@ -461,6 +516,54 @@ function createPrereqsRoutes() {
           pendingSudo: [],
           errors: [],
         };
+
+      const curl = Bun.which("curl", { PATH: process.env.PATH });
+      const bash = Bun.which("bash", { PATH: process.env.PATH });
+      if (!curl || !bash) {
+        const missing = [!curl ? "curl" : null, !bash ? "bash" : null]
+          .filter(Boolean)
+          .join(" and ");
+        return {
+          ok: false,
+          installed: [],
+          pendingSudo: [],
+          errors: [
+            {
+              name: CLI_COMMAND,
+              message:
+                `Cannot auto-install ${DISPLAY}: ${missing} not found on PATH. ` +
+                `Install ${missing}, or install manually: ${PLANDEX_INSTALL_CMD}`,
+            },
+          ],
+        };
+      }
+
+      // /usr/local/bin needs root and we are not root → the script's own sudo
+      // would prompt non-interactively and fail. Surface it as pending sudo so
+      // an operator can run the elevated command, instead of erroring.
+      if (!canInstallPlandexWithoutSudo()) {
+        return {
+          ok: false,
+          installed: [],
+          pendingSudo: [
+            {
+              name: CLI_COMMAND,
+              command: PLANDEX_INSTALL_CMD,
+              reason: `${DISPLAY} installs to /usr/local/bin which requires elevated permissions on this host.`,
+            },
+          ],
+          errors: [],
+        };
+      }
+
+      const result = installPlandexViaScript();
+      if (result.ok && getCliVersion())
+        return {
+          ok: true,
+          installed: [CLI_COMMAND],
+          pendingSudo: [],
+          errors: [],
+        };
       return {
         ok: false,
         installed: [],
@@ -468,7 +571,9 @@ function createPrereqsRoutes() {
         errors: [
           {
             name: CLI_COMMAND,
-            message: `Install ${DISPLAY} CLI from its vendor instructions and retry.`,
+            message: result.ok
+              ? `${DISPLAY} install script reported success but the binary was not found on PATH.`
+              : result.message,
           },
         ],
       };

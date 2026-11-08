@@ -56,10 +56,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/algoshred/vibe-plugin-ai-plandex.git"
+    "url": "git+https://github.com/Algoshred/vibe-plugin-ai-plandex.git"
   },
   "bugs": {
-    "url": "https://github.com/algoshred/vibe-plugin-ai-plandex/issues"
+    "url": "https://github.com/Algoshred/vibe-plugin-ai-plandex/issues"
   },
   "publishConfig": {
     "access": "public",

@@ -191,11 +191,9 @@ class ProviderImpl implements AIAgentProvider {
   readonly name = PROVIDER_NAME;
   private sessions = new Map<string, ManagedSession>();
   private logIngester: LogIngester | null = null;
-  private hostServices: HostServices | null = null;
   private logger: BoundLogger | null = null;
 
   setHostServices(hs: HostServices) {
-    this.hostServices = hs;
     this.logger = new BoundLogger(hs.logger, `${PROVIDER_NAME}-provider`);
     const registry = new ProviderRegistry(hs);
     this.logIngester =
@@ -317,6 +315,7 @@ class ProviderImpl implements AIAgentProvider {
       session.status = "error";
       session.updatedAt = new Date().toISOString();
       const errorMsg = err instanceof Error ? err.message : "Unknown error";
+      this.log("error", `Session ${sessionId} failed: ${errorMsg}`);
       this.logIngester?.append({ sessionId, type: "error", content: errorMsg });
       throw err;
     }
